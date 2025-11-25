@@ -10,11 +10,11 @@ const uint8_t ESP_TX = 11; // Nano TX on 11 (to ESP RX)
 SoftwareSerial espSerial(ESP_RX, ESP_TX);
 
 // Simple circular buffer in EEPROM
-const uint16_t RECORD_CAP = 250;      // storage cap
+const uint16_t RECORD_CAP = 500;      // storage cap
 const uint16_t RECORD_BYTES = 2;      // storage size
 const uint16_t META_NEXT_ADDR = 0;    // 0-1 store nextIndex
 const uint16_t META_COUNT_ADDR = 2;   // 2-3 store recordCount
-const uint16_t START_ADDR = 4;        // data starts at byte 4
+const uint16_t START_ADDR = 4;        // data starts at byte 4 (leaves 24 bytes headroom in 1KB EEPROM)
 
 uint16_t nextIndex = 0;
 uint16_t recordCount = 0;
@@ -90,7 +90,7 @@ void sendAllReadings() {
     espSerial.println(value);
   }
 
-  clearBuffer(); // wipe after successful transmission
+  clearBuffer();
   espSerial.println("END");
 }
 
@@ -99,7 +99,7 @@ void handleLine(const char *line) {
     return;
   }
 
-  // Accept "MQ135:<value>" or just "<value>"
+  // "MQ135:<value>"
   if (strncasecmp(line, "MQ135:", 6) == 0 || isdigit(line[0])) {
     const char *payload = line;
     if (strncasecmp(line, "MQ135:", 6) == 0) {
@@ -128,8 +128,8 @@ void handleLine(const char *line) {
 }
 
 void setup() {
-  Serial.begin(115200);   // USB debug
-  espSerial.begin(9600);  // Link to ESP01 hub
+  Serial.begin(115200);   // USB
+  espSerial.begin(9600);  // ESP01
 
   loadMeta();
   Serial.print("EEPROM next slot: ");
