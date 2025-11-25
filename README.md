@@ -1,7 +1,7 @@
 A project on developing a webserver to work with microcontrollers and electronic modules, basically IoT.
 
 ## What was added
-- Spring Boot (Tomcat) webserver with JSP UI, PostgreSQL storage, simple in‑memory auth.
+- Spring Boot (Tomcat) webserver with JSP UI, PostgreSQL storage, simple in-memory auth.
 - TCP fetch routine that asks the Nano for every stored reading, ingests them, and wipes Nano storage when done.
 - Updated Arduino sketches to support the fetch protocol and full-duplex forwarding through the ESP01 endpoint.
 
@@ -36,9 +36,9 @@ A project on developing a webserver to work with microcontrollers and electronic
 - Accepts a new incoming client by dropping the previous one (keeps things simple).
 
 ### Arduino Nano (`Arduino/ArduinoNano/ArduinoNano.ino`)
-- Stores raw MQ135 readings in EEPROM (ring buffer of 250 values).
+- Stores raw MQ135 readings in EEPROM (ring buffer of 500 values).
 - Commands over the ESP serial link:
-  - `MQ135:<value>` or `<value>`: store reading (0–1023).
+  - `MQ135:<value>` or `<value>`: store reading (0-1023).
   - `FETCH`: emit `BEGIN <count>`, each `DATA:<value>`, then `END` and wipe buffer.
   - `CLEAR`: wipe buffer immediately.
   - `PING`: respond `PONG`.

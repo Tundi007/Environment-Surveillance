@@ -9,9 +9,15 @@ const uint8_t ESP_RX = 10; // Nano RX 10 (to ESP TX)
 const uint8_t ESP_TX = 11; // Nano TX on 11 (to ESP RX)
 SoftwareSerial espSerial(ESP_RX, ESP_TX);
 
+struct ClimateSample {
+  int16_t tempTenths;   // temperature in 0.1 C
+  int16_t humTenths;    // humidity in 0.1 %RH
+  uint16_t gasRaw;      // MQ-135 ADC 0-1023
+};
+
 // Simple circular buffer in EEPROM
-const uint16_t RECORD_CAP = 500;      // storage cap
-const uint16_t RECORD_BYTES = 2;      // storage size
+const uint16_t RECORD_CAP = 150;               // number of climate samples we can hold
+const uint16_t RECORD_BYTES = sizeof(ClimateSample);
 const uint16_t META_NEXT_ADDR = 0;    // 0-1 store nextIndex
 const uint16_t META_COUNT_ADDR = 2;   // 2-3 store recordCount
 const uint16_t START_ADDR = 4;        // data starts at byte 4 (leaves 24 bytes headroom in 1KB EEPROM)
@@ -19,9 +25,8 @@ const uint16_t START_ADDR = 4;        // data starts at byte 4 (leaves 24 bytes 
 uint16_t nextIndex = 0;
 uint16_t recordCount = 0;
 
-char lineBuf[48];
+char lineBuf[72];
 uint8_t lineLen = 0;
-
 uint16_t readUint16(int addr) {
   return EEPROM.read(addr) | (uint16_t(EEPROM.read(addr + 1)) << 8);
 }
@@ -29,6 +34,18 @@ uint16_t readUint16(int addr) {
 void writeUint16(int addr, uint16_t value) {
   EEPROM.update(addr, value & 0xFF);
   EEPROM.update(addr + 1, (value >> 8) & 0xFF);
+}
+
+void writeSample(uint16_t slot, const ClimateSample &s) {
+  const int addr = START_ADDR + slot * RECORD_BYTES;
+  EEPROM.put(addr, s);
+}
+
+ClimateSample readSample(uint16_t slot) {
+  ClimateSample s;
+  const int addr = START_ADDR + slot * RECORD_BYTES;
+  EEPROM.get(addr, s);
+  return s;
 }
 
 void persistMeta() {
@@ -53,11 +70,11 @@ void clearBuffer() {
   persistMeta();
 }
 
-void storeReading(uint16_t value) {
-  uint16_t slot = nextIndex % RECORD_CAP;
-  int addr = START_ADDR + slot * RECORD_BYTES;
-  EEPROM.update(addr, lowByte(value));
-  EEPROM.update(addr + 1, highByte(value));
+void storeSample(int16_t tempTenths, int16_t humTenths, uint16_t gasRaw) {
+  ClimateSample sample = {tempTenths, humTenths, gasRaw};
+
+  const uint16_t slot = nextIndex % RECORD_CAP;
+  writeSample(slot, sample);
 
   nextIndex = (slot + 1) % RECORD_CAP;
   if (recordCount < RECORD_CAP) {
@@ -65,10 +82,14 @@ void storeReading(uint16_t value) {
   }
   persistMeta();
 
-  Serial.print("Stored MQ135 raw ");
-  Serial.print(value);
+  Serial.print("Stored sample T/H/G = ");
+  Serial.print(tempTenths / 10.0, 1);
+  Serial.print("/");
+  Serial.print(humTenths / 10.0, 1);
+  Serial.print("/");
+  Serial.print(gasRaw);
   Serial.print(" at slot ");
-  Serial.println((nextIndex + RECORD_CAP - 1) % RECORD_CAP);
+  Serial.println(slot);
 }
 
 void sendAllReadings() {
@@ -83,15 +104,43 @@ void sendAllReadings() {
   uint16_t start = (nextIndex + RECORD_CAP - recordCount) % RECORD_CAP;
   for (uint16_t i = 0; i < recordCount; i++) {
     uint16_t slot = (start + i) % RECORD_CAP;
-    int addr = START_ADDR + slot * RECORD_BYTES;
-    uint16_t value = readUint16(addr);
+    ClimateSample sample = readSample(slot);
 
     espSerial.print("DATA:");
-    espSerial.println(value);
+    espSerial.print(sample.tempTenths / 10.0, 1);
+    espSerial.print(",");
+    espSerial.print(sample.humTenths / 10.0, 1);
+    espSerial.print(",");
+    espSerial.println(sample.gasRaw);
   }
 
   clearBuffer();
   espSerial.println("END");
+}
+
+bool parseClimateTriple(const char *payload, int16_t &tempTenths, int16_t &humTenths, uint16_t &gasRaw) {
+  // Work on a copy because strtok modifies the buffer.
+  char buf[48];
+  strncpy(buf, payload, sizeof(buf) - 1);
+  buf[sizeof(buf) - 1] = '\0';
+
+  char *tok = strtok(buf, ",");
+  if (!tok) return false;
+  double t = strtod(tok, NULL);
+
+  tok = strtok(NULL, ",");
+  if (!tok) return false;
+  double h = strtod(tok, NULL);
+
+  tok = strtok(NULL, ",");
+  if (!tok) return false;
+  long g = strtol(tok, NULL, 10);
+  if (g < 0 || g > 1023) return false;
+
+  tempTenths = static_cast<int16_t>(t * 10.0);
+  humTenths = static_cast<int16_t>(h * 10.0);
+  gasRaw = static_cast<uint16_t>(g);
+  return true;
 }
 
 void handleLine(const char *line) {
@@ -100,6 +149,17 @@ void handleLine(const char *line) {
   }
 
   // "MQ135:<value>"
+  if (strncasecmp(line, "CLIMATE:", 8) == 0 || strncasecmp(line, "DATA:", 5) == 0) {
+    const char *payload = line + (tolower(line[0]) == 'c' ? 8 : 5);
+    int16_t tTenths = 0;
+    int16_t hTenths = 0;
+    uint16_t gas = 0;
+    if (parseClimateTriple(payload, tTenths, hTenths, gas)) {
+      storeSample(tTenths, hTenths, gas);
+    }
+    return;
+  }
+
   if (strncasecmp(line, "MQ135:", 6) == 0 || isdigit(line[0])) {
     const char *payload = line;
     if (strncasecmp(line, "MQ135:", 6) == 0) {
@@ -107,7 +167,8 @@ void handleLine(const char *line) {
     }
     long v = strtol(payload, NULL, 10);
     if (v >= 0 && v <= 1023) {
-      storeReading(static_cast<uint16_t>(v));
+      // If only gas is provided, still store a full record with T/H set to 0.0.
+      storeSample(0, 0, static_cast<uint16_t>(v));
     }
     return;
   }
